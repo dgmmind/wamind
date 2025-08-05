@@ -1,0 +1,94 @@
+<div class="form-container">
+    <div class="card">
+        <div class="card-header">
+            <h1>📤 Enviar Mensaje</h1>
+        </div>
+        
+        <form id="messageForm">
+            <div class="form-group">
+                <label for="phoneNumber">📞 Número de Teléfono</label>
+                <input 
+                    type="tel" 
+                    id="phoneNumber" 
+                    name="phoneNumber"
+                    placeholder="Ej: 34612345678"
+                    required
+                >
+                <small>Incluye el código de país sin el símbolo +</small>
+            </div>
+
+            <div class="form-group">
+                <label for="message">💬 Mensaje</label>
+                <textarea 
+                    id="message" 
+                    name="message"
+                    placeholder="Escribe tu mensaje aquí..."
+                    required
+                ></textarea>
+            </div>
+
+            <button type="submit" class="btn-send">
+                📤 Enviar
+            </button>
+        </form>
+
+        <div class="status" id="connectionStatus">
+            <span id="statusText">Verificando conexión...</span>
+            <button id="logoutBtn" class="btn-logout" style="display:none;margin-left:1rem;">Cerrar sesión</button>
+        </div>
+
+        <div class="result" id="resultContainer" style="display: none;">
+            <span id="resultMessage"></span>
+        </div>
+    </div>
+
+
+    <div class="info">
+        <h3>ℹ️ Instrucciones</h3>
+        <ul>
+            <li>✓ Incluye el código de país</li>
+            <li>✓ El número debe estar en WhatsApp</li>
+            <li>✓ Escanea el código QR para conectar</li>
+        </ul>
+    </div>
+</div> 
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const logoutBtn = document.getElementById('logoutBtn');
+    const statusText = document.getElementById('statusText');
+    if (logoutBtn) {
+        // Mostrar el botón solo si está conectado
+        function updateLogoutBtn() {
+            if (statusText && statusText.textContent.trim().toLowerCase().includes('conectado')) {
+                logoutBtn.style.display = '';
+            } else {
+                logoutBtn.style.display = 'none';
+            }
+        }
+        updateLogoutBtn();
+        // También actualizar cuando cambie el estado
+        setInterval(updateLogoutBtn, 2000);
+        logoutBtn.addEventListener('click', async function() {
+            if (!confirm('¿Seguro que deseas cerrar la sesión y eliminar la cuenta de este servidor?')) return;
+            logoutBtn.disabled = true;
+            logoutBtn.textContent = 'Cerrando...';
+            try {
+                const resp = await fetch('/api/clear', { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    alert('Sesión cerrada y eliminada completamente.');
+                    window.location.href = '/auth';
+                } else {
+                    alert(data.error || 'No se pudo cerrar la sesión.');
+                }
+            } catch (e) {
+                alert('Error de red al cerrar sesión.');
+            } finally {
+                logoutBtn.disabled = false;
+                logoutBtn.textContent = 'Cerrar sesión';
+            }
+        });
+    }
+});
+</script>
