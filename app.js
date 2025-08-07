@@ -83,20 +83,15 @@ class BaileyClient {
                 console.log("Escanea este código QR para conectar WhatsApp:");
                 qrcode.generate(qr, { small: true });
                 this.qrCode = qr;
+                this.qrGeneratedAt = Date.now();
                 this.isConnected = false;
             }
 
             if (connection === "close") {
-               
-                if (statusCode !== DisconnectReason.loggedOut) {
-                     this.isConnected = false;
+                this.isConnected = false;
                 this.qrCode = null;
-                    await this.connect();
-                }
-
+                // Ya no reconectar automáticamente. Solo conectar bajo demanda (por /api/qr)
                 if (statusCode === DisconnectReason.loggedOut) {
-                     this.isConnected = false;
-                this.qrCode = null;
                     console.log("Reiniciar bailey y eliminar carpeta de sesión");
                     const sessionPath = path.join(__dirname, 'Sessions', 'auth');
                     try {
@@ -104,7 +99,6 @@ class BaileyClient {
                     } catch (e) {
                         console.error('Error eliminando carpeta de sesión al desloguear:', e);
                     }
-                    await this.connect();
                 }
             }
 
@@ -144,12 +138,42 @@ class BaileyClient {
     }
 
     getQRCode() {
-        return this.qrCode;
+        // Suponiendo que el QR dura 30 segundos (ajusta según tu implementación real)
+        if (this.qrCode && this.qrGeneratedAt) {
+            const expiresIn = 30 - Math.floor((Date.now() - this.qrGeneratedAt) / 1000);
+            return { qr: this.qrCode, expiresIn: expiresIn > 0 ? expiresIn : 0 };
+        }
+        return { qr: this.qrCode, expiresIn: 0 };
+    }
+
+    async disconnect() {
+        try {
+            if (this.client) {
+                try { await this.client.logout(); } catch (e) {}
+                try { await this.client.ws.close(); } catch (e) {}
+                // Eliminar listeners para evitar fugas
+                if (this.client.ev && this.client.ev.off) {
+                    this.client.ev.off('connection.update', this.handleConnectionUpdate);
+                }
+                this.isConnected = false;
+                this.qrCode = null;
+                // Eliminar sesión después de desconexión
+                const sessionPath = path.join(__dirname, 'Sessions', 'auth');
+                await eliminarCarpetaSesion(sessionPath);
+                // Limpiar instancia
+                this.client = null;
+                console.log('Desconexión completa');
+            }
+        } catch (error) {
+            console.error('Error en desconexión:', error);
+            throw error;
+        }
     }
 }
 
 // Crear una instancia de BaileyClient
 const bailey = new BaileyClient();
+// NO conectar automáticamente. Solo bajo demanda por /api/qr
 
 // Rutas
 
@@ -169,12 +193,36 @@ app.get('/api/status', (req, res) => {
 });
 
 // API: QR solo si no está autenticado
-app.get('/api/qr', (req, res) => {
-    if (!bailey.getConnectionStatus()) {
-        const qr = bailey.getQRCode();
-        res.json({ qr });
+// Contador de intentos automáticos de QR
+let qrAutoAttempts = 0;
+const MAX_QR_AUTO = 5;
+
+app.get('/api/qr', async (req, res) => {
+    const isAuto = req.query.auto === '1';
+    if (isAuto) {
+        qrAutoAttempts++;
     } else {
-        res.json({ qr: null });
+        qrAutoAttempts = 0; // Reset al pedir manual
+    }
+    if (isAuto && qrAutoAttempts >= MAX_QR_AUTO) {
+        // Desconectar cliente para liberar recursos
+        console.log('⚠️ Límite de intentos automáticos de QR alcanzado. El cliente ha sido apagado. Esperando solicitud manual...');
+        await bailey.disconnect();
+        return res.json({ qr: null, expiresIn: 0, blocked: true });
+    }
+    if (!bailey.getConnectionStatus()) {
+        let { qr, expiresIn } = bailey.getQRCode();
+        // Si no hay QR o está expirado, forzar la generación
+        if (!qr || expiresIn <= 0) {
+            // Reconectar para forzar QR
+            await bailey.connect();
+            // Esperar brevemente a que se genere el QR
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            ({ qr, expiresIn } = bailey.getQRCode());
+        }
+        res.json({ qr, expiresIn });
+    } else {
+        res.json({ qr: null, expiresIn: 0 });
     }
 });
 
@@ -239,15 +287,21 @@ app.post('/api/clear', async (req, res) => {
         res.status(500).json({ error: 'Error interno al cerrar sesión.' });
     }
 });
+// Nuevo endpoint para desconexión controlada
+app.post('/api/logout', async (req, res) => {
+    try {
+        await bailey.disconnect();
+        res.json({ success: true, message: 'Conexión cerrada correctamente' });
+    } catch (error) {
+        res.status(500).json({ 
+            success: false, 
+            error: 'Error al cerrar conexión: ' + error.message 
+        });
+    }
+});
+
 // Iniciar servidor
 app.listen(PORT, () => {
     console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-    console.log(`📱 Conectando a WhatsApp...`);
-});
-
-// Conectar Bailey
-bailey.connect().then(() => {
-    console.log("✅ Bailey iniciado correctamente");
-}).catch((error) => {
-    console.error("❌ Error al iniciar Bailey:", error);
+    // No conectar Bailey automáticamente. Solo bajo demanda por /api/qr
 });

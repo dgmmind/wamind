@@ -31,14 +31,23 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // Si estamos en la página principal, solo verificar estado y permitir enviar mensajes
+    // Verificar estado cada 5 segundos en todas las páginas
+    checkStatus();
+    let statusInterval = setInterval(checkStatus, 5000);
+
+    // Si estamos en la página principal, solo permitir enviar mensajes
     if (!isAuthPage) {
         const form = document.getElementById('messageForm');
         const result = document.getElementById('resultContainer');
         const resultMessage = document.getElementById('resultMessage');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const statusText = document.getElementById('statusText');
 
+        // --- PROTECCIÓN: Remover listeners previos ---
         if (form) {
-            form.addEventListener('submit', async function(e) {
+            form.replaceWith(form.cloneNode(true));
+            const newForm = document.getElementById('messageForm');
+            newForm.addEventListener('submit', async function(e) {
                 e.preventDefault();
                 const phone = form.phoneNumber.value;
                 const message = form.message.value;
@@ -81,6 +90,44 @@ document.addEventListener('DOMContentLoaded', function() {
             }, 3000);
         }
 
+        // Mostrar/ocultar botón logout según estado
+        function updateLogoutBtn() {
+            if (logoutBtn && statusText) {
+                if (statusText.textContent.trim().toLowerCase().includes('conectado')) {
+                    logoutBtn.style.display = '';
+                } else {
+                    logoutBtn.style.display = 'none';
+                }
+            }
+        }
+        updateLogoutBtn();
+        if (statusText) {
+            // Actualizar cuando cambie el texto
+            const observer = new MutationObserver(updateLogoutBtn);
+            observer.observe(statusText, { childList: true, subtree: true, characterData: true });
+        }
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', async function() {
+                if (!confirm('¿Seguro que deseas cerrar la sesión y eliminar la cuenta de este servidor?')) return;
+                logoutBtn.disabled = true;
+                logoutBtn.textContent = 'Cerrando...';
+                try {
+                    const resp = await fetch('/api/logout', { method: 'POST' });
+                    const data = await resp.json();
+                    if (data.success) {
+                        alert('Sesión cerrada correctamente.');
+                        window.location.href = '/auth';
+                    } else {
+                        alert(data.error || 'No se pudo cerrar la sesión.');
+                    }
+                } catch (e) {
+                    alert('Error de red al cerrar sesión.');
+                } finally {
+                    logoutBtn.disabled = false;
+                    logoutBtn.textContent = 'Cerrar sesión';
+                }
+            });
+        }
         // Verificar estado cada 5 segundos
         checkStatus();
         setInterval(checkStatus, 5000);
@@ -90,10 +137,20 @@ document.addEventListener('DOMContentLoaded', function() {
     if (isAuthPage) {
         const qrContainer = document.getElementById('qrContainer');
         const qrCode = document.getElementById('qrCode');
+        const requestQrBtn = document.getElementById('requestQrBtn');
+        let qrExpiresIn = 0;
+        let qrTimerInterval = null;
+        const qrExpireMsg = document.createElement('div');
+        qrExpireMsg.style.color = 'red';
+        qrExpireMsg.style.fontWeight = 'bold';
+        qrExpireMsg.style.marginTop = '10px';
+        qrExpireMsg.id = 'qrExpireMsg';
+        qrCode && qrCode.parentNode && qrCode.parentNode.appendChild(qrExpireMsg);
 
-        // Verifica estado y muestra QR si corresponde
-        async function checkAuthAndShowQR() {
+        async function checkAuthAndShowQR(isAuto = false) {
             try {
+                // Pausar el polling de estado para evitar doble petición
+                if (typeof statusInterval !== 'undefined') clearInterval(statusInterval);
                 const statusResp = await fetch('/api/status');
                 const statusData = await statusResp.json();
                 if (statusData.connected) {
@@ -101,13 +158,30 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
                 // Si no está conectado, pedir QR
-                const qrResp = await fetch('/api/qr');
+                const qrResp = await fetch('/api/qr' + (isAuto ? '?auto=1' : ''));
                 const qrData = await qrResp.json();
+                if (qrData.blocked) {
+                    qrContainer.style.display = 'none';
+                    stopQrExpireTimer();
+                    if (requestQrBtn) {
+                        requestQrBtn.disabled = false;
+                    }
+                    qrExpireMsg.textContent = '⚠️ Límite de intentos automáticos alcanzado. Haz clic en "Solicitar QR" para reintentar.';
+                    qrExpireMsg.style.color = 'red';
+                    qrExpireMsg.style.fontWeight = 'bold';
+                    if (qrCode && qrCode.parentNode && !qrExpireMsg.parentNode) {
+                        qrCode.parentNode.appendChild(qrExpireMsg);
+                    }
+                    return;
+                }
                 if (qrData.qr) {
                     await generateQRCodeImage(qrData.qr);
                     qrContainer.style.display = 'block';
+                    qrExpiresIn = qrData.expiresIn || 0;
+                    startQrExpireTimer();
                 } else {
                     qrContainer.style.display = 'none';
+                    stopQrExpireTimer();
                 }
             } catch (error) {
                 if (statusText && status) {
@@ -115,8 +189,42 @@ document.addEventListener('DOMContentLoaded', function() {
                     status.className = 'status error';
                 }
                 if (qrContainer) qrContainer.style.display = 'none';
+            } finally {
+                // Reanudar el polling de estado
+                statusInterval = setInterval(checkStatus, 5000);
             }
         }
+
+        let qrAutoRequestCount = 0;
+        let qrAutoRequestInterval = null;
+
+        function resetQrAutoRequest() {
+            qrAutoRequestCount = 0;
+            if (qrAutoRequestInterval) {
+                clearInterval(qrAutoRequestInterval);
+                qrAutoRequestInterval = null;
+            }
+        }
+
+        async function autoRequestQR() {
+            if (qrAutoRequestCount < 5) {
+                qrAutoRequestCount++;
+                await checkAuthAndShowQR(true); // true = automático
+            } else {
+                resetQrAutoRequest();
+                if (requestQrBtn) requestQrBtn.disabled = false;
+            }
+        }
+
+        if (requestQrBtn) {
+            requestQrBtn.addEventListener('click', function() {
+                resetQrAutoRequest();
+                checkAuthAndShowQR(false); // false = manual
+                if (requestQrBtn) requestQrBtn.disabled = true;
+                qrAutoRequestInterval = setInterval(autoRequestQR, 5000); // 5 segundos
+            });
+        }
+
 
         // Generar QR como imagen (usa la función existente)
         async function generateQRCodeImage(qrData) {
@@ -139,8 +247,37 @@ document.addEventListener('DOMContentLoaded', function() {
             qrCode.appendChild(qrImg);
         }
 
-        // Verificar cada 5 segundos
-        checkAuthAndShowQR();
-        setInterval(checkAuthAndShowQR, 5000);
+        function startQrExpireTimer() {
+            stopQrExpireTimer();
+            updateQrExpireMsg();
+            qrTimerInterval = setInterval(() => {
+                if (qrExpiresIn > 0) {
+                    qrExpiresIn--;
+                    updateQrExpireMsg();
+                } else {
+                    updateQrExpireMsg();
+                    stopQrExpireTimer();
+                }
+            }, 1000);
+        }
+        function stopQrExpireTimer() {
+            if (qrTimerInterval) {
+                clearInterval(qrTimerInterval);
+                qrTimerInterval = null;
+            }
+            qrExpireMsg.textContent = '';
+        }
+        function updateQrExpireMsg() {
+            if (qrExpiresIn > 0) {
+                if (qrExpiresIn <= 5) {
+                    qrExpireMsg.textContent = `⚠️ El código QR está por vencer en ${qrExpiresIn} segundos. Recarga la página o espera un nuevo QR.`;
+                } else {
+                    qrExpireMsg.textContent = `El código QR vence en ${qrExpiresIn} segundos.`;
+                }
+            } else {
+                qrExpireMsg.textContent = 'El código QR ha vencido. Esperando uno nuevo...';
+            }
+        }
+
     }
 });
