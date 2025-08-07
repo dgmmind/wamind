@@ -49,13 +49,13 @@ document.addEventListener('DOMContentLoaded', function() {
             const newForm = document.getElementById('messageForm');
             newForm.addEventListener('submit', async function(e) {
                 e.preventDefault();
-                const phone = form.phoneNumber.value;
-                const message = form.message.value;
+                const phone = newForm.phoneNumber.value;
+                const message = newForm.message.value;
                 if (!phone || !message) {
                     showResult('Completa todos los campos', 'error');
                     return;
                 }
-                const btn = form.querySelector('button');
+                const btn = newForm.querySelector('button');
                 btn.disabled = true;
                 btn.textContent = 'Enviando...';
                 try {
@@ -67,7 +67,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     const data = await response.json();
                     if (response.ok) {
                         showResult('Mensaje enviado', 'success');
-                        form.reset();
+                        newForm.reset();
                     } else {
                         showResult(data.error || 'Error al enviar', 'error');
                     }
